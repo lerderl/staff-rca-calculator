@@ -1,6 +1,5 @@
 import { BrowserRouter, Route, Routes, NavLink, Outlet } from "react-router-dom";
 import { DefaultProviders } from "./components/providers/default.tsx";
-import AuthCallback from "./pages/auth/Callback.tsx";
 import Index from "./pages/Index.tsx";
 import DatabasePage from "./pages/database/page.tsx";
 import ProcessingPage from "./pages/processing/page.tsx";
@@ -9,13 +8,13 @@ import NotFound from "./pages/NotFound.tsx";
 import { Database, CalendarCheck, FileSpreadsheet, ChevronRight, LogOut, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
-import { SignInButton } from "@/components/ui/signin.tsx";
+import { SignInForm } from "@/components/ui/signin.tsx";
 import { useAuth } from "@/hooks/use-auth.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 
 function AppLayout() {
-  const { user, signout } = useAuth();
+  const { user, signOut } = useAuth();
 
   return (
     <div className="flex h-screen bg-background">
@@ -35,7 +34,7 @@ function AppLayout() {
           <div className="flex items-center gap-2">
             <div className="flex-1 min-w-0">
               <div className="text-xs font-medium text-sidebar-foreground truncate">
-                {user?.profile.name ?? user?.profile.email ?? "Admin"}
+                {user?.name ?? user?.email ?? "Admin"}
               </div>
               <div className="text-xs text-sidebar-foreground/40">Signed in</div>
             </div>
@@ -43,7 +42,7 @@ function AppLayout() {
               variant="ghost"
               size="icon"
               className="h-7 w-7 text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent cursor-pointer shrink-0"
-              onClick={() => signout()}
+              onClick={() => void signOut()}
               title="Sign out">
               
               <LogOut size={14} />
@@ -61,7 +60,7 @@ function AppLayout() {
             variant="ghost"
             size="icon"
             className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground cursor-pointer"
-            onClick={() => signout()}
+            onClick={() => void signOut()}
             title="Sign out">
             
             <LogOut size={15} />
@@ -101,10 +100,10 @@ function LoginPage() {
           <div className="space-y-1">
             <h2 className="text-base font-semibold text-sidebar-foreground">Sign In</h2>
             <p className="text-xs text-sidebar-foreground/50">
-              Use your assigned username and password to access the system.
+              Use your assigned email and password to access the system.
             </p>
           </div>
-          <SignInButton className="w-full cursor-pointer" />
+          <SignInForm />
         </div>
 
         <p className="text-xs text-sidebar-foreground/30">
@@ -157,7 +156,6 @@ export default function App() {
     <DefaultProviders>
       <BrowserRouter>
         <Routes>
-          <Route path="/auth/callback" element={<AuthCallback />} />
           <Route
             path="*"
             element={

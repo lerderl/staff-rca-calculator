@@ -1,138 +1,97 @@
-import { forwardRef, useCallback, useEffect } from "react";
-import { type VariantProps } from "class-variance-authority";
-import { Loader2, LogIn, LogOut } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { Loader2, LogIn, UserPlus } from "lucide-react";
 import { toast } from "sonner";
-import { useAuth } from "@usehercules/auth/react";
-import { Button, buttonVariants } from "@/components/ui/button.tsx";
+import { useAuthActions } from "@convex-dev/auth/react";
+import { Button } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
+import { Label } from "@/components/ui/label.tsx";
 
-export interface SignInButtonProps
-  extends
-    Omit<React.ComponentProps<"button">, "onClick">,
-    VariantProps<typeof buttonVariants> {
-  /**
-   * Custom onClick handler that runs before authentication action
-   */
-  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
-  /**
-   * Whether to show icons in the button
-   * @default true
-   */
-  showIcon?: boolean;
-  /**
-   * Custom text for sign in state
-   * @default "Sign In"
-   */
-  signInText?: string;
-  /**
-   * Custom text for sign out state
-   * @default "Sign Out"
-   */
-  signOutText?: string;
-  /**
-   * Custom text for loading state
-   * @default "Signing In..." or "Signing Out..."
-   */
-  loadingText?: string;
-  /**
-   * Whether to use the asChild pattern
-   * @default false
-   */
-  asChild?: boolean;
+export interface SignInFormProps {
+  className?: string;
 }
 
 /**
- * A button component that handles authentication sign in/out with proper loading states
- * and accessibility features.
+ * Email/password sign-in and account-creation form backed by Convex Auth's
+ * Password provider (convex/auth.ts). No external identity provider needed.
  */
-export const SignInButton = forwardRef<HTMLButtonElement, SignInButtonProps>(
-  (
-    {
-      onClick,
-      disabled,
-      showIcon = true,
-      signInText = "Sign In",
-      signOutText = "Sign Out",
-      loadingText,
-      className,
-      variant,
-      size,
-      asChild = false,
-      ...props
-    },
-    ref,
-  ) => {
-    const { isAuthenticated, signin, signout, isLoading, error } = useAuth();
+export function SignInForm({ className }: SignInFormProps) {
+  const { signIn } = useAuthActions();
+  const [flow, setFlow] = useState<"signIn" | "signUp">("signIn");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-    useEffect(() => {
-      if (error) {
-        toast.error("Login error", {
-          description: error.message,
-        });
-        console.error("Login error", error);
-      }
-    }, [error]);
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsSubmitting(true);
+    try {
+      const formData = new FormData();
+      formData.set("email", email);
+      formData.set("password", password);
+      formData.set("flow", flow);
+      await signIn("password", formData);
+    } catch (err) {
+      toast.error(flow === "signIn" ? "Sign in failed" : "Account creation failed", {
+        description:
+          err instanceof Error ? err.message : "Check your details and try again.",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
-    const handleClick = useCallback(
-      async (event: React.MouseEvent<HTMLButtonElement>) => {
-        // Run custom onClick first
-        onClick?.(event);
-
-        try {
-          if (isAuthenticated) {
-            await signout();
-          } else {
-            await signin();
-          }
-        } catch (err) {
-          console.error("Authentication error:", err);
-          // Don't prevent the default here as the auth library handles errors
-        }
-      },
-      [isAuthenticated, signout, signin, onClick],
-    );
-
-    const isDisabled = disabled || isLoading;
-    const defaultLoadingText = isAuthenticated
-      ? "Signing Out..."
-      : "Signing In...";
-    const currentLoadingText = loadingText || defaultLoadingText;
-
-    const buttonText = isLoading
-      ? currentLoadingText
-      : isAuthenticated
-        ? signOutText
-        : signInText;
-
-    const icon = isLoading ? (
-      <Loader2 className="size-4 animate-spin" />
-    ) : isAuthenticated ? (
-      <LogOut className="size-4" />
-    ) : (
-      <LogIn className="size-4" />
-    );
-
-    return (
-      <Button
-        ref={ref}
-        onClick={handleClick}
-        disabled={isDisabled}
-        variant={variant}
-        size={size}
-        className={className}
-        asChild={asChild}
-        aria-label={
-          isAuthenticated
-            ? "Sign out of your account"
-            : "Sign in to your account"
-        }
-        aria-describedby={error ? "auth-error" : undefined}
-        {...props}
-      >
-        {showIcon && icon}
-        {buttonText}
-      </Button>
-    );
-  },
-);
-
-SignInButton.displayName = "SignInButton";
+  return (
+    <form onSubmit={handleSubmit} className={className}>
+      <div className="space-y-4 text-left">
+        <div className="space-y-1.5">
+          <Label htmlFor="email">Email</Label>
+          <Input
+            id="email"
+            type="email"
+            autoComplete="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="password">Password</Label>
+          <Input
+            id="password"
+            type="password"
+            autoComplete={flow === "signIn" ? "current-password" : "new-password"}
+            required
+            minLength={8}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </div>
+        <Button type="submit" className="w-full cursor-pointer" disabled={isSubmitting}>
+          {isSubmitting ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : flow === "signIn" ? (
+            <LogIn className="size-4" />
+          ) : (
+            <UserPlus className="size-4" />
+          )}
+          {isSubmitting
+            ? flow === "signIn"
+              ? "Signing In..."
+              : "Creating Account..."
+            : flow === "signIn"
+              ? "Sign In"
+              : "Create Account"}
+        </Button>
+        <button
+          type="button"
+          className="w-full text-xs text-sidebar-foreground/50 hover:text-sidebar-foreground cursor-pointer"
+          onClick={() => setFlow(flow === "signIn" ? "signUp" : "signIn")}
+        >
+          {flow === "signIn"
+            ? "Need an account? Create one"
+            : "Already have an account? Sign in"}
+        </button>
+      </div>
+    </form>
+  );
+}

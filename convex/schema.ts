@@ -1,12 +1,10 @@
 import { defineSchema, defineTable } from "convex/server";
+import { authTables } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 
 export default defineSchema({
-  users: defineTable({
-    tokenIdentifier: v.string(),
-    name: v.optional(v.string()),
-    email: v.optional(v.string()),
-  }).index("by_token", ["tokenIdentifier"]),
+  // Users, sessions, and sign-in accounts managed by @convex-dev/auth.
+  ...authTables,
 
   // Master personnel database
   personnel: defineTable({
