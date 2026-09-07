@@ -139,6 +139,29 @@ the host machine, and anyone else on the LAN can open
 `http://<host-lan-ip>:5173` in a browser — no install, no account, no
 internet required on their end.
 
+### If you're just using the app, not hosting it
+
+Everything above — Node.js, pnpm, `npx convex dev`, `pnpm dev`, the
+firewall rules — is setup that happens **once, on one machine** (the
+"host"). Everyone else reaching the app over the LAN needs none of it,
+including someone whose device policy forbids installing Node.js or pnpm:
+
+- No install, no build tools, no account — just a browser (Chrome, Edge,
+  Firefox; whatever's already on the machine).
+- Open `http://<host-lan-ip>:5173` (ask whoever runs the host machine for
+  its current LAN IP — get it from that machine's `ipconfig`).
+- Being on the same Wi-Fi/LAN as the host is the only real requirement.
+  If the page fails to load at all, that's almost always either a
+  different network, or the host hasn't run the firewall rules above yet.
+- If the page loads but sign-in or data hangs, it's usually the visiting
+  device's own firewall blocking the outbound WebSocket connection to
+  `<host-lan-ip>:3210` — check that before assuming the host is
+  misconfigured.
+
+The host machine has to keep both `npx convex dev` and `pnpm dev` running
+for the whole time anyone else wants to use the app — closing either
+terminal on the host takes it down for everyone.
+
 ### Keeping the LAN IP from changing
 
 DHCP-assigned IPs are usually stable in practice (a home/office router
