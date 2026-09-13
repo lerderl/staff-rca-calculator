@@ -21,7 +21,7 @@ function AppLayout() {
       {/* Sidebar */}
       <aside className="hidden md:flex w-60 flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border">
         <div className="px-5 py-5 border-b border-sidebar-border">
-          <div className="text-xs font-semibold uppercase tracking-widest text-sidebar-foreground/50 mb-1">Nigerian Navy</div>
+          <div className="text-xs font-semibold uppercase tracking-widest text-sidebar-foreground/50 mb-1">Nigerian Navy A & B</div>
           <h1 className="text-base font-bold text-sidebar-foreground leading-tight">RCA Payment<br />Processing</h1>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1">
@@ -30,7 +30,7 @@ function AppLayout() {
           <SideNavLink to="/schedules" icon={<FileSpreadsheet size={16} />} label="Bank Schedules" />
         </nav>
         <div className="px-4 py-4 border-t border-sidebar-border space-y-3">
-          <div className="text-xs text-sidebar-foreground/40">RCA Rate: ₦3,000 / day</div>
+          <div className="text-xs text-sidebar-foreground/40 leading-relaxed">Conceived and Implemented by<br />Capt (NN) YM Jazuli</div>
           <div className="flex items-center gap-2">
             <div className="flex-1 min-w-0">
               <div className="text-xs font-medium text-sidebar-foreground truncate">
@@ -108,6 +108,9 @@ function LoginPage() {
 
         <p className="text-xs text-sidebar-foreground/30">
           Unauthorised access is prohibited.
+        </p>
+        <p className="text-xs text-sidebar-foreground/20 mt-2">
+          Conceived and Implemented by Capt (NN) YM Jazuli
         </p>
       </div>
     </div>);

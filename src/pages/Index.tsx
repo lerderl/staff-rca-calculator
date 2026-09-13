@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { Database, CalendarCheck, FileSpreadsheet, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
+import { AttributionFooter } from "@/components/attribution-footer.tsx";
 
 export default function Index() {
   const navigate = useNavigate();
@@ -8,10 +9,10 @@ export default function Index() {
     <div className="min-h-full flex flex-col items-center justify-center px-6 py-16">
       <div className="max-w-2xl w-full text-center space-y-4 mb-12">
         <div className="font-semibold uppercase tracking-widest text-muted-foreground text-lg">NN A & B</div>
-        <h1 className="text-3xl font-bold tracking-tight text-balance">RCA Payment Processing</h1>
-        
-
-        
+        <h1 className="text-3xl font-bold tracking-tight text-balance">Payment Processing System</h1>
+        <p className="text-sm text-muted-foreground max-w-md mx-auto">
+          Process RCA and other monthly payments using the master personnel database. Upload branch files, match Svc Nos, and generate bank schedules.
+        </p>
         <Button onClick={() => navigate("/database")} className="mt-2 cursor-pointer">
           Get Started <ArrowRight size={16} />
         </Button>
@@ -24,21 +25,25 @@ export default function Index() {
           title="Master Database"
           desc="Upload or manage the personnel database with bank account details."
           onClick={() => navigate("/database")} />
-        
+
         <StepCard
           step="2"
           icon={<CalendarCheck size={20} />}
           title="Monthly Processing"
-          desc="Select the month, upload branch files, and match Svc Nos automatically."
+          desc="Select payment type and month, upload branch files, and match Svc Nos automatically."
           onClick={() => navigate("/processing")} />
-        
+
         <StepCard
           step="3"
           icon={<FileSpreadsheet size={20} />}
           title="Bank Schedules"
           desc="Generate and export payment schedules grouped by bank."
           onClick={() => navigate("/schedules")} />
-        
+
+      </div>
+
+      <div className="w-full max-w-2xl">
+        <AttributionFooter />
       </div>
     </div>);
 

@@ -20,6 +20,8 @@ export const create = mutation({
   args: {
     month: v.number(),
     year: v.number(),
+    paymentType: v.optional(v.union(v.literal("rca"), v.literal("custom"))),
+    paymentLabel: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const months = [
@@ -27,11 +29,17 @@ export const create = mutation({
       "July", "August", "September", "October", "November", "December",
     ];
     const daysInMonth = new Date(args.year, args.month, 0).getDate();
-    const rcaRate = 3000;
+    const pType = args.paymentType ?? "rca";
+    const pLabel = pType === "rca" ? "RCA" : (args.paymentLabel ?? "Custom Payment");
+    const rcaRate = pType === "rca" ? 3000 : 0;
+    const monthLabel = `${months[args.month - 1]} ${args.year}`;
+    const label = pType === "rca" ? monthLabel : `${pLabel} - ${monthLabel}`;
     return await ctx.db.insert("monthlyRuns", {
       month: args.month,
       year: args.year,
-      label: `${months[args.month - 1]} ${args.year}`,
+      label,
+      paymentType: pType,
+      paymentLabel: pLabel,
       rcaRate,
       daysInMonth,
       rcaPerPerson: rcaRate * daysInMonth,
@@ -86,15 +94,18 @@ export const initProcessRun = mutation({
 });
 
 // Step 2: Process a batch of Svc Nos (call multiple times for large datasets)
+// For custom payments, amounts map provides per-person amounts from the uploaded file
 export const processBatch = mutation({
   args: {
     runId: v.id("monthlyRuns"),
     svcNos: v.array(v.string()), // max ~200 per batch
+    amounts: v.optional(v.record(v.string(), v.number())),
   },
   handler: async (ctx, args): Promise<{ matched: string[]; unmatched: string[] }> => {
     const run = await ctx.db.get(args.runId);
     if (!run) throw new Error("Run not found");
 
+    const isCustom = (run.paymentType ?? "rca") === "custom";
     const matched: string[] = [];
     const unmatched: string[] = [];
 
@@ -104,6 +115,10 @@ export const processBatch = mutation({
         .withIndex("by_svc_no", (q) => q.eq("svcNo", svcNo))
         .unique();
       if (person) {
+        // RCA: fixed amount per person; Custom: amount from file or zero
+        const amount = isCustom
+          ? (args.amounts?.[svcNo] ?? 0)
+          : run.rcaPerPerson;
         await ctx.db.insert("runPersonnel", {
           runId: args.runId,
           svcNo: person.svcNo,
@@ -112,7 +127,7 @@ export const processBatch = mutation({
           bankName: person.bankName,
           sortCode: person.sortCode,
           accountNo: person.accountNo,
-          amount: run.rcaPerPerson,
+          amount,
         });
         matched.push(svcNo);
       } else {
@@ -196,14 +211,22 @@ export const processRun = mutation({
   },
 });
 
-// Check if a run already exists for a given month/year
+// Check if a run already exists for a given month/year and optional payment type
 export const findExistingRun = query({
-  args: { month: v.number(), year: v.number() },
+  args: {
+    month: v.number(),
+    year: v.number(),
+    paymentType: v.optional(v.union(v.literal("rca"), v.literal("custom"))),
+  },
   handler: async (ctx, args) => {
-    return await ctx.db
+    const runs = await ctx.db
       .query("monthlyRuns")
       .withIndex("by_year_month", (q) => q.eq("year", args.year).eq("month", args.month))
-      .first();
+      .collect();
+    if (args.paymentType) {
+      return runs.find((r) => (r.paymentType ?? "rca") === args.paymentType) ?? null;
+    }
+    return runs[0] ?? null;
   },
 });
 
