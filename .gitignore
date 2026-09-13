@@ -27,6 +27,7 @@ tsconfig.tsbuildinfo
 *.sw?
 snapshot*
 public/.git-keep
+app*
 
 # Environment variables
 .env*

@@ -10,6 +10,7 @@ import {
   ChevronDown, ChevronUp, FileUp, ArrowRight, X, FileText, RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
@@ -19,6 +20,8 @@ import {
 } from "@/components/ui/alert-dialog.tsx";
 import { useNavigate } from "react-router-dom";
 import { usePaginatedQuery } from "convex/react";
+import { cn } from "@/lib/utils.ts";
+import { AttributionFooter } from "@/components/attribution-footer.tsx";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -31,7 +34,11 @@ const YEARS = Array.from({ length: 5 }, (_, i) => CURRENT_YEAR - 1 + i);
 // Process Svc Nos in batches of this size to respect Convex limits
 const BATCH_SIZE = 150;
 
-type UploadedFile = { name: string; svcNos: string[] };
+type UploadedFile = {
+  name: string;
+  svcNos: string[];
+  amounts: Record<string, number>;
+};
 
 export default function ProcessingPage() {
   const navigate = useNavigate();
@@ -44,6 +51,8 @@ export default function ProcessingPage() {
 
   const [month, setMonth] = useState(String(new Date().getMonth() + 1));
   const [year, setYear] = useState(String(CURRENT_YEAR));
+  const [paymentType, setPaymentType] = useState<"rca" | "custom">("rca");
+  const [paymentLabel, setPaymentLabel] = useState("");
   const [creating, setCreating] = useState(false);
   const [activeRunId, setActiveRunId] = useState<Id<"monthlyRuns"> | null>(null);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -62,7 +71,7 @@ export default function ProcessingPage() {
 
   const existingRun = useQuery(
     api.runs.findExistingRun,
-    { month: Number(month), year: Number(year) }
+    { month: Number(month), year: Number(year), paymentType }
   );
 
   const { results: matchedResults, status: resultsStatus, loadMore } = usePaginatedQuery(
@@ -74,7 +83,26 @@ export default function ProcessingPage() {
   // Deduplicated Svc Nos across all uploaded files
   const allSvcNos = [...new Set(uploadedFiles.flatMap((f) => f.svcNos))];
 
+  // Merged amounts from all files (last file wins for duplicates)
+  const allAmounts: Record<string, number> = {};
+  for (const f of uploadedFiles) {
+    for (const [svc, amt] of Object.entries(f.amounts)) {
+      allAmounts[svc] = amt;
+    }
+  }
+  const amountsDetected = Object.keys(allAmounts).length;
+
+  // Effective payment type from active run (or state for new runs)
+  const effectiveType = activeRun
+    ? (activeRun.paymentType ?? "rca")
+    : paymentType;
+  const isCustom = effectiveType === "custom";
+
   const handleCreateRun = async (force = false) => {
+    if (paymentType === "custom" && !paymentLabel.trim()) {
+      toast.error("Enter a payment description for custom payments");
+      return;
+    }
     if (!force && existingRun) {
       setOverwriteConfirm(true);
       setPendingCreate(true);
@@ -86,11 +114,17 @@ export default function ProcessingPage() {
       if (existingRun) {
         await deleteRun({ runId: existingRun._id });
       }
-      const id = await createRun({ month: Number(month), year: Number(year) });
+      const id = await createRun({
+        month: Number(month),
+        year: Number(year),
+        paymentType,
+        paymentLabel: paymentType === "custom" ? paymentLabel : undefined,
+      });
       setActiveRunId(id);
       setUploadedFiles([]);
       setShowResults(false);
-      toast.success(`Run created for ${MONTHS[Number(month) - 1]} ${year}`);
+      const typeLabel = paymentType === "rca" ? "RCA" : paymentLabel;
+      toast.success(`Run created: ${typeLabel} — ${MONTHS[Number(month) - 1]} ${year}`);
     } catch {
       toast.error("Failed to create run");
     }
@@ -111,10 +145,12 @@ export default function ProcessingPage() {
           const ws = wb.Sheets[wb.SheetNames[0]];
           const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: false }) as unknown[][];
           const svcNos: string[] = [];
+          const amounts: Record<string, number> = {};
 
           // Find the header row — first non-empty row
           let headerRowIdx = -1;
           let svcColIdx = -1;
+          let amtColIdx = -1;
           for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
             if (!row || row.length === 0) continue;
@@ -136,6 +172,19 @@ export default function ProcessingPage() {
             headerRowIdx = 0; // treat first row as header to skip
           }
 
+          // Detect amount column in the header row
+          if (headerRowIdx >= 0 && rows[headerRowIdx]) {
+            const headerRow = rows[headerRowIdx];
+            for (let j = 0; j < headerRow.length; j++) {
+              if (j === svcColIdx) continue;
+              const h = String(headerRow[j] ?? "").toLowerCase().trim();
+              if (h.includes("amount") || h.includes("amt") || h === "gross" || h === "net" || h === "pay" || h === "salary") {
+                amtColIdx = j;
+                break;
+              }
+            }
+          }
+
           // Read data rows (everything after the header row)
           for (let i = headerRowIdx + 1; i < rows.length; i++) {
             const row = rows[i];
@@ -143,17 +192,27 @@ export default function ProcessingPage() {
             const raw = String(row[svcColIdx] ?? "").trim();
             if (!raw) continue;
             svcNos.push(raw);
+
+            // Extract amount if column was detected
+            if (amtColIdx >= 0 && row.length > amtColIdx) {
+              const amtRaw = String(row[amtColIdx] ?? "").trim().replace(/,/g, "");
+              const amt = parseFloat(amtRaw);
+              if (!isNaN(amt) && amt >= 0) {
+                amounts[raw] = amt;
+              }
+            }
           }
 
           setUploadedFiles((prev) => {
             // Replace if same filename, otherwise append
             const idx = prev.findIndex((f) => f.name === file.name);
+            const newFile: UploadedFile = { name: file.name, svcNos, amounts };
             if (idx >= 0) {
               const updated = [...prev];
-              updated[idx] = { name: file.name, svcNos };
+              updated[idx] = newFile;
               return updated;
             }
-            return [...prev, { name: file.name, svcNos }];
+            return [...prev, newFile];
           });
         } catch {
           toast.error(`Failed to read ${file.name}`);
@@ -191,6 +250,16 @@ export default function ProcessingPage() {
       // Step 1: clear previous data
       await initProcessRun({ runId: activeRunId });
 
+      // Merge amounts for custom payments
+      const mergedAmounts: Record<string, number> = {};
+      if (isCustom) {
+        for (const f of uploadedFiles) {
+          for (const [svc, amt] of Object.entries(f.amounts)) {
+            mergedAmounts[svc] = amt;
+          }
+        }
+      }
+
       // Step 2: process in batches
       const allMatched: string[] = [];
       const allUnmatched: string[] = [];
@@ -200,7 +269,21 @@ export default function ProcessingPage() {
       }
 
       for (let i = 0; i < batches.length; i++) {
-        const result = await processBatch({ runId: activeRunId, svcNos: batches[i] });
+        // For custom payments, send only the amounts for this batch
+        const batchAmounts: Record<string, number> = {};
+        if (isCustom) {
+          for (const svc of batches[i]) {
+            if (mergedAmounts[svc] !== undefined) {
+              batchAmounts[svc] = mergedAmounts[svc];
+            }
+          }
+        }
+
+        const result = await processBatch({
+          runId: activeRunId,
+          svcNos: batches[i],
+          ...(isCustom ? { amounts: batchAmounts } : {}),
+        });
         allMatched.push(...result.matched);
         allUnmatched.push(...result.unmatched);
         setProcessProgress(Math.round(((i + 1) / batches.length) * 100));
@@ -254,13 +337,61 @@ export default function ProcessingPage() {
           Monthly Processing
         </h2>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Select the month, upload branch complement files, and match Svc Nos against the master database.
+          Select payment type and month, upload branch complement files, and match Svc Nos against the master database.
         </p>
       </div>
 
-      {/* Step 1 — Select Month */}
+      {/* Step 1 — Configure Run */}
       <div className="border border-border rounded-xl p-5 space-y-4 bg-card">
-        <StepHeader n={1} title="Select Month & Year" />
+        <StepHeader n={1} title="Configure Run" />
+
+        {/* Payment Type Toggle */}
+        <div className="space-y-1.5">
+          <label className="text-xs text-muted-foreground font-medium">Payment Type</label>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setPaymentType("rca")}
+              className={cn(
+                "px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer border",
+                paymentType === "rca"
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-muted text-muted-foreground border-border hover:bg-muted/80"
+              )}
+            >
+              RCA Payment
+            </button>
+            <button
+              onClick={() => setPaymentType("custom")}
+              className={cn(
+                "px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer border",
+                paymentType === "custom"
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-muted text-muted-foreground border-border hover:bg-muted/80"
+              )}
+            >
+              Custom Payment
+            </button>
+          </div>
+        </div>
+
+        {/* Custom payment label */}
+        {paymentType === "custom" && (
+          <div className="space-y-1.5">
+            <label className="text-xs text-muted-foreground font-medium">
+              Payment Description <span className="text-destructive">*</span>
+            </label>
+            <Input
+              placeholder="e.g. Hazard Allowance, Training Allowance, Uniform Allowance"
+              value={paymentLabel}
+              onChange={(e) => setPaymentLabel(e.target.value)}
+              className="max-w-sm"
+            />
+            <p className="text-xs text-muted-foreground">
+              This label will appear on schedules and reports.
+            </p>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-end gap-3">
           <div className="space-y-1.5">
             <label className="text-xs text-muted-foreground font-medium">Month</label>
@@ -297,7 +428,7 @@ export default function ProcessingPage() {
         {existingRun && !activeRunId && (
           <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 rounded-lg px-3 py-2">
             <AlertTriangle size={15} />
-            A run already exists for {MONTHS[Number(month) - 1]} {year} ({existingRun.totalMatched} matched). Creating a new run will replace it.
+            A {(existingRun.paymentType ?? "rca") === "rca" ? "RCA" : (existingRun.paymentLabel ?? "custom")} run already exists for {MONTHS[Number(month) - 1]} {year} ({existingRun.totalMatched} matched). Creating a new run will replace it.
           </div>
         )}
 
@@ -305,9 +436,16 @@ export default function ProcessingPage() {
           <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/30 rounded-lg px-3 py-2">
             <CheckCircle2 size={15} />
             <span>
-              Active run: <strong>{activeRun.label}</strong> —{" "}
-              <strong>₦{activeRun.rcaPerPerson.toLocaleString()}</strong> per person
-              <span className="text-xs ml-1 opacity-70">({activeRun.daysInMonth} days × ₦3,000)</span>
+              Active run: <strong>{activeRun.label}</strong>
+              {(activeRun.paymentType ?? "rca") === "rca" ? (
+                <>
+                  {" — "}
+                  <strong>₦{activeRun.rcaPerPerson.toLocaleString()}</strong> per person
+                  <span className="text-xs ml-1 opacity-70">({activeRun.daysInMonth} days × ₦3,000)</span>
+                </>
+              ) : (
+                <span className="text-xs ml-1 opacity-70"> — Custom amounts from uploaded files</span>
+              )}
             </span>
           </div>
         )}
@@ -329,7 +467,9 @@ export default function ProcessingPage() {
             {isDragActive ? "Drop files here..." : "Drop branch files here, or click to browse"}
           </p>
           <p className="text-xs text-muted-foreground mt-1">
-            Multiple files allowed · Svc No auto-detected by column header · Excel (.xlsx / .xls)
+            Multiple files allowed · Svc No auto-detected by column header
+            {isCustom && " · Amount column auto-detected"}
+            {" · Excel (.xlsx / .xls)"}
           </p>
         </div>
 
@@ -340,7 +480,12 @@ export default function ProcessingPage() {
               <div key={f.name} className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2">
                 <FileText size={15} className="text-muted-foreground shrink-0" />
                 <span className="text-sm font-medium flex-1 truncate">{f.name}</span>
-                <span className="text-xs text-muted-foreground">{f.svcNos.length} Svc Nos</span>
+                <span className="text-xs text-muted-foreground">
+                  {f.svcNos.length} Svc Nos
+                  {isCustom && Object.keys(f.amounts).length > 0 && (
+                    <> · {Object.keys(f.amounts).length} with amounts</>
+                  )}
+                </span>
                 <button
                   onClick={() => removeFile(f.name)}
                   className="text-muted-foreground hover:text-destructive cursor-pointer transition-colors"
@@ -359,6 +504,16 @@ export default function ProcessingPage() {
                   {duplicatesRemoved} duplicate(s) removed
                 </span>
               )}
+              {isCustom && totalSvcNos > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {amountsDetected} of {totalSvcNos} with amounts
+                  {amountsDetected < totalSvcNos && (
+                    <span className="text-amber-600 dark:text-amber-400 ml-1">
+                      ({totalSvcNos - amountsDetected} will default to ₦0)
+                    </span>
+                  )}
+                </span>
+              )}
               <button
                 onClick={() => setUploadedFiles([])}
                 className="text-xs text-muted-foreground hover:text-destructive cursor-pointer ml-auto"
@@ -374,8 +529,17 @@ export default function ProcessingPage() {
       <div className={`border border-border rounded-xl p-5 space-y-4 bg-card transition-opacity ${(!activeRunId || totalSvcNos === 0) ? "opacity-40 pointer-events-none" : ""}`}>
         <StepHeader n={3} title="Process & Match" />
         <p className="text-sm text-muted-foreground">
-          Match <strong>{totalSvcNos}</strong> Svc Nos against the master database and calculate RCA of{" "}
-          <strong>₦{activeRun?.rcaPerPerson.toLocaleString() ?? "..."}</strong> per person.
+          {isCustom ? (
+            <>
+              Match <strong>{totalSvcNos}</strong> Svc Nos against the master database.
+              Amounts from uploaded files will be used (zero where not available).
+            </>
+          ) : (
+            <>
+              Match <strong>{totalSvcNos}</strong> Svc Nos against the master database and calculate RCA of{" "}
+              <strong>₦{activeRun?.rcaPerPerson.toLocaleString() ?? "..."}</strong> per person.
+            </>
+          )}
         </p>
 
         <div className="flex items-center gap-3 flex-wrap">
@@ -421,7 +585,9 @@ export default function ProcessingPage() {
               <CheckCircle2 size={15} />
               <span>
                 <strong>{activeRun.totalMatched}</strong> personnel matched and ready.
-                Total RCA: <strong>₦{(activeRun.totalMatched * activeRun.rcaPerPerson).toLocaleString()}</strong>
+                {(activeRun.paymentType ?? "rca") === "rca" && (
+                  <> Total RCA: <strong>₦{(activeRun.totalMatched * activeRun.rcaPerPerson).toLocaleString()}</strong></>
+                )}
               </span>
               <Button
                 size="sm"
@@ -538,45 +704,58 @@ export default function ProcessingPage() {
             Previous Runs
           </h3>
           <div className="space-y-2">
-            {runs.map((run) => (
-              <div
-                key={run._id}
-                className="flex items-center gap-3 border border-border rounded-lg px-4 py-3 bg-card hover:bg-muted/20 transition-colors"
-              >
-                <div className="flex-1 min-w-0">
-                  <span className="font-medium text-sm">{run.label}</span>
-                  <span className="text-muted-foreground text-xs ml-3">
-                    {run.totalMatched} matched · ₦{run.rcaPerPerson.toLocaleString()}/person
-                  </span>
+            {runs.map((run) => {
+              const runType = (run.paymentType ?? "rca") as string;
+              const runLabel = run.paymentLabel ?? "RCA";
+              return (
+                <div
+                  key={run._id}
+                  className="flex items-center gap-3 border border-border rounded-lg px-4 py-3 bg-card hover:bg-muted/20 transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <span className="font-medium text-sm">{run.label}</span>
+                    <span className="text-muted-foreground text-xs ml-3">
+                      {run.totalMatched} matched
+                      {runType === "rca" ? ` · ₦${run.rcaPerPerson.toLocaleString()}/person` : " · Custom amounts"}
+                    </span>
+                  </div>
+                  <Badge
+                    variant="secondary"
+                    className="text-xs shrink-0"
+                  >
+                    {runLabel}
+                  </Badge>
+                  <Badge
+                    variant={run.status === "ready" || run.status === "exported" ? "default" : "secondary"}
+                    className="text-xs shrink-0"
+                  >
+                    {run.status}
+                  </Badge>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="cursor-pointer text-xs shrink-0"
+                    onClick={() => {
+                      setActiveRunId(run._id);
+                      setUploadedFiles([]);
+                      setShowResults(run.status === "ready");
+                      setPaymentType((run.paymentType ?? "rca") as "rca" | "custom");
+                      setPaymentLabel(run.paymentLabel ?? "");
+                    }}
+                  >
+                    Load
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-destructive cursor-pointer shrink-0"
+                    onClick={() => setDeleteRunId(run._id)}
+                  >
+                    <Trash2 size={14} />
+                  </Button>
                 </div>
-                <Badge
-                  variant={run.status === "ready" || run.status === "exported" ? "default" : "secondary"}
-                  className="text-xs shrink-0"
-                >
-                  {run.status}
-                </Badge>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="cursor-pointer text-xs shrink-0"
-                  onClick={() => {
-                    setActiveRunId(run._id);
-                    setUploadedFiles([]);
-                    setShowResults(run.status === "ready");
-                  }}
-                >
-                  Load
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 text-destructive cursor-pointer shrink-0"
-                  onClick={() => setDeleteRunId(run._id)}
-                >
-                  <Trash2 size={14} />
-                </Button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -587,7 +766,7 @@ export default function ProcessingPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Replace existing run?</AlertDialogTitle>
             <AlertDialogDescription>
-              A run for {MONTHS[Number(month) - 1]} {year} already exists with{" "}
+              A {paymentType === "rca" ? "RCA" : paymentLabel || "custom"} run for {MONTHS[Number(month) - 1]} {year} already exists with{" "}
               {existingRun?.totalMatched ?? 0} matched records. Creating a new run will permanently
               delete the existing one.
             </AlertDialogDescription>
@@ -626,6 +805,8 @@ export default function ProcessingPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AttributionFooter />
     </div>
   );
 }

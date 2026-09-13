@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label.tsx";
 import { paginationOptsValidator } from "convex/server";
 import { usePaginatedQuery } from "convex/react";
 import { Badge } from "@/components/ui/badge.tsx";
+import { AttributionFooter } from "@/components/attribution-footer.tsx";
 
 type PersonnelRecord = {
   rankRate: string;
@@ -415,6 +416,8 @@ export default function DatabasePage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AttributionFooter />
     </div>
   );
 }

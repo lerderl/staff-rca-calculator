@@ -22,8 +22,10 @@ export default defineSchema({
   monthlyRuns: defineTable({
     month: v.number(), // 1-12
     year: v.number(),
-    label: v.string(), // e.g. "September 2025"
-    rcaRate: v.number(), // 3000
+    label: v.string(), // e.g. "September 2025" or "Hazard Allowance - September 2025"
+    paymentType: v.optional(v.union(v.literal("rca"), v.literal("custom"))),
+    paymentLabel: v.optional(v.string()), // "RCA" or user-defined label for custom payments
+    rcaRate: v.number(), // 3000 for RCA, 0 for custom
     daysInMonth: v.number(),
     rcaPerPerson: v.number(), // rate * days
     status: v.union(v.literal("processing"), v.literal("ready"), v.literal("exported")),

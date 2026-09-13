@@ -202,6 +202,6 @@ Set-DnsClientServerAddress -InterfaceAlias "<adapter-name>" -ResetServerAddresse
 
 ## Resetting the local deployment
 
-`.env.local` and the local Convex data live only on this machine. To start
+`.env.local` and the local Convex data live only on a host machine. To start
 completely fresh, stop both dev servers, delete `.env.local`, and repeat the
 first-time setup above — a brand-new local deployment will be provisioned.

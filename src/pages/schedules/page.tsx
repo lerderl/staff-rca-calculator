@@ -15,7 +15,9 @@ import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
 import { Separator } from "@/components/ui/separator.tsx";
+import { AttributionFooter } from "@/components/attribution-footer.tsx";
 
+const FOOTNOTE = "Conceived and Implemented by Capt (NN) YM Jazuli";
 const MAX_PER_SCHEDULE = 950;
 
 type RunPersonnel = {
@@ -125,11 +127,10 @@ function buildSheet(
   totalSchedules: number,
   periodLabel: string,
   debitAccount: string,
-  valueDate: string
+  valueDate: string,
+  paymentLabel: string
 ): XLSX.WorkSheet {
-  // Narration text: "BEING PAYMENT OF 'MONTH YEAR' RCA"
-  // Extract month/year from periodLabel (e.g. "September 2026")
-  const narration = `BEING PAYMENT OF ${periodLabel.toUpperCase()} RCA`;
+  const narration = `BEING PAYMENT OF ${periodLabel} ${paymentLabel.toUpperCase()}`;
   const valueDateFormatted = fmtDate(valueDate);
 
   // ── Column headers ────────────────────────────────────────────────────────
@@ -178,13 +179,19 @@ function buildSheet(
     valueDateFormatted,        // VALUE DATE
   ]);
 
+  // ── Footnote ───────────────────────────────────────────────────────────────
+  rows.push([]);
+  rows.push(["", "", "", "", FOOTNOTE]);
+
   const ws = XLSX.utils.aoa_to_sheet(rows);
 
   // ── Force BENEFICIARY ACCOUNT NUMBER column (E) to text ──────────────────
   // This preserves leading zeros in account numbers and sort codes
-  // Data rows start at row 2 (row 1 is the header); last row is the DR row
-  forceTextColumn(ws, "C", 2, rows.length); // BANK CODE/MDA ACCOUNT (sort code)
-  forceTextColumn(ws, "E", 2, rows.length); // BENEFICIARY ACCOUNT NUMBER
+  // Data rows start at row 2 (row 1 is the header); last row is the DR row,
+  // followed by 2 footnote rows which are excluded here
+  const dataEnd = rows.length - 2;
+  forceTextColumn(ws, "C", 2, dataEnd); // BANK CODE/MDA ACCOUNT (sort code)
+  forceTextColumn(ws, "E", 2, dataEnd); // BENEFICIARY ACCOUNT NUMBER
 
   // ── Column widths ─────────────────────────────────────────────────────────
   ws["!cols"] = [
@@ -208,7 +215,7 @@ function buildSheet(
   applyBold(ws, colLetters.map((c) => `${c}1`));
 
   // ── Bold the debit (last) row ─────────────────────────────────────────────
-  const drRow = rows.length; // 1-based
+  const drRow = rows.length - 2; // 1-based, before the 2 footnote rows
   applyBold(ws, colLetters.map((c) => `${c}${drRow}`));
 
   return ws;
@@ -237,6 +244,12 @@ export default function SchedulesPage() {
 
   const schedules = allPersonnel ? buildSchedules(allPersonnel) : null;
   const grandTotal = schedules ? schedules.reduce((s, sch) => s + sch.total, 0) : 0;
+
+  // Derived values from selected run
+  const paymentLabel = selectedRun?.paymentLabel ?? "RCA";
+  const periodLabel = selectedRun
+    ? `${MONTH_NAMES[(selectedRun.month ?? 1) - 1]} ${selectedRun.year ?? ""}`
+    : "";
 
   // Banks that appear in more than one schedule (forced split)
   const bankCounts = new Map<string, number>();
@@ -275,14 +288,14 @@ export default function SchedulesPage() {
     try {
       const wb = XLSX.utils.book_new();
       schedules!.forEach((schedule) => {
-        const ws = buildSheet(schedule, schedules!.length, selectedRun?.label ?? "", debitAccount, valueDate);
+        const ws = buildSheet(schedule, schedules!.length, periodLabel, debitAccount, valueDate, paymentLabel);
         XLSX.utils.book_append_sheet(wb, ws, `Schedule ${schedule.index}`);
       });
 
       // Summary sheet
       const summaryRows: (string | number)[][] = [
-        ["NIGERIAN NAVY — RCA PAYMENT SUMMARY"],
-        [`Period: ${selectedRun?.label ?? ""}`],
+        [`NIGERIAN NAVY — ${paymentLabel.toUpperCase()} PAYMENT SUMMARY`],
+        [`Period: ${periodLabel}`],
         [`Debit Account: ${debitAccount}`],
         [`Value Date: ${fmtDate(valueDate)}`],
         [`Total Personnel: ${selectedRun?.totalMatched ?? 0}`],
@@ -296,12 +309,16 @@ export default function SchedulesPage() {
         ["Bank Breakdown"],
         ["Bank Name", "No. of Personnel", "Total Amount (₦)"],
         ...sortedBanks.map(([bank, info]) => [bank, info.count, info.total]),
+        [],
+        [FOOTNOTE],
       ];
       const summaryWs = XLSX.utils.aoa_to_sheet(summaryRows);
       summaryWs["!cols"] = [{ wch: 16 }, { wch: 44 }, { wch: 20 }, { wch: 22 }];
       XLSX.utils.book_append_sheet(wb, summaryWs, "Summary");
 
-      const filename = `RCA_${(selectedRun?.label ?? "export").replace(/\s+/g, "_")}_Schedules.xlsx`;
+      const filePrefix = paymentLabel.replace(/\s+/g, "_");
+      const filePeriod = periodLabel.replace(/\s+/g, "_");
+      const filename = `${filePrefix}_${filePeriod}_Schedules.xlsx`;
       XLSX.writeFile(wb, filename);
 
       if (selectedRunId) {
@@ -321,9 +338,11 @@ export default function SchedulesPage() {
     setExportingIndex(schedule.index);
     try {
       const wb = XLSX.utils.book_new();
-      const ws = buildSheet(schedule, schedules!.length, selectedRun?.label ?? "", debitAccount, valueDate);
+      const ws = buildSheet(schedule, schedules!.length, periodLabel, debitAccount, valueDate, paymentLabel);
       XLSX.utils.book_append_sheet(wb, ws, `Schedule ${schedule.index}`);
-      const filename = `RCA_${(selectedRun?.label ?? "export").replace(/\s+/g, "_")}_Schedule_${schedule.index}.xlsx`;
+      const filePrefix = paymentLabel.replace(/\s+/g, "_");
+      const filePeriod = periodLabel.replace(/\s+/g, "_");
+      const filename = `${filePrefix}_${filePeriod}_Schedule_${schedule.index}.xlsx`;
       XLSX.writeFile(wb, filename);
       toast.success(`Schedule ${schedule.index} exported`);
     } catch {
@@ -368,12 +387,15 @@ export default function SchedulesPage() {
                 ) : readyRuns.length === 0 ? (
                   <SelectItem value="none" disabled>No completed runs — process a month first</SelectItem>
                 ) : (
-                  readyRuns.map((r) => (
-                    <SelectItem key={r._id} value={r._id}>
-                      {r.label} · {r.totalMatched} records
-                      {r.status === "exported" ? " ✓" : ""}
-                    </SelectItem>
-                  ))
+                  readyRuns.map((r) => {
+                    const rLabel = r.paymentLabel ?? "RCA";
+                    return (
+                      <SelectItem key={r._id} value={r._id}>
+                        {r.label} · {r.totalMatched} records · {rLabel}
+                        {r.status === "exported" ? " ✓" : ""}
+                      </SelectItem>
+                    );
+                  })
                 )}
               </SelectContent>
             </Select>
@@ -425,6 +447,9 @@ export default function SchedulesPage() {
 
           {/* Value date / debit account confirmation strip */}
           <div className="rounded-xl border border-border bg-muted/30 px-5 py-3 flex flex-wrap gap-x-8 gap-y-1 text-sm">
+            <span className="text-muted-foreground">
+              Payment: <strong className="text-foreground">{paymentLabel}</strong>
+            </span>
             <span className="text-muted-foreground">
               Debit Account: <strong className="text-foreground">{debitAccount || <span className="text-destructive">Not entered</span>}</strong>
             </span>
@@ -635,6 +660,8 @@ export default function SchedulesPage() {
           No personnel found for this run. Go to Monthly Processing and process the run first.
         </div>
       )}
+
+      <AttributionFooter />
     </div>
   );
 }
