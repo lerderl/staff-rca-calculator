@@ -200,6 +200,64 @@ Set-NetIPInterface -InterfaceAlias "<adapter-name>" -Dhcp Enabled
 Set-DnsClientServerAddress -InterfaceAlias "<adapter-name>" -ResetServerAddresses
 ```
 
+## Auto-starting the servers at logon
+
+On the **host machine**, both dev servers can be set to start automatically
+whenever you sign into Windows, instead of running `npx convex dev` and
+`pnpm dev` by hand each time.
+
+[scripts/start-dev-servers.ps1](scripts/start-dev-servers.ps1) launches both
+in their own visible `cmd.exe` windows ("staff-rca-calculator (backend)" and
+"staff-rca-calculator (frontend)"), and is registered to run at logon via a Scheduled Task named
+**StaffRCACalculator-DevServers**. To (re)create that task, run in an
+ordinary (non-admin) PowerShell:
+
+```powershell
+$ScriptPath = "<path-to-project>\scripts\start-dev-servers.ps1"
+$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
+$Trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+Register-ScheduledTask -TaskName "StaffRCACalculator-DevServers" -Action $Action -Trigger $Trigger -Settings $Settings -Description "Starts Convex backend and Vite frontend dev servers at logon" -Force
+```
+
+This triggers **at logon**, not at power-on before anyone signs in — if you
+want it running the instant the PC boots with nobody at the keyboard, the
+machine would also need to be configured to auto-login, which is a separate
+(and more sensitive, since it stores no password but does bypass the login
+screen) setup not covered here.
+
+**Why the script waits before starting Convex:** "At logon" can fire before
+Wi-Fi has actually finished reconnecting. `npx convex dev` needs to reach
+`version.convex.dev` to check for backend updates, and fails immediately
+with `Failed to fetch latest backend version` if the network isn't up yet —
+even though running the exact same command by hand moments later works
+fine, since by then the network has caught up. The script works around this
+by polling that endpoint (up to 15s) before deciding whether to launch
+Convex normally.
+
+**What happens with no internet at all:** the CLI's version check is
+mandatory as far as it's concerned — it fails the same way whether the
+network is 5 seconds from being ready or never coming back, even though the
+backend binary is already downloaded and cached locally and doesn't
+actually need that check to run. So if the 15s wait above times out, the
+script falls back to launching the cached `convex-local-backend.exe`
+directly (same ports and deployment credentials the CLI would use, read
+from `.convex/local/default/config.json`), bypassing the CLI wrapper and
+its internet-dependent preflight check entirely — the window title changes
+to "staff-rca-calculator (backend - OFFLINE, convex/ changes not auto-pushed)" so it's
+obvious which mode it's running in. The trade-off: it comes up with
+whatever functions were last successfully pushed — edits made to `convex/`
+while offline won't take effect until you run `npx convex dev` normally
+once you're back online. The frontend (`pnpm dev`) has no such dependency
+and starts the same way regardless of network state.
+
+To stop this from happening automatically, disable or remove the task:
+
+```powershell
+Disable-ScheduledTask -TaskName "StaffRCACalculator-DevServers"   # keep it, just stop auto-running
+Unregister-ScheduledTask -TaskName "StaffRCACalculator-DevServers" -Confirm:$false   # remove entirely
+```
+
 ## Resetting the local deployment
 
 `.env.local` and the local Convex data live only on a host machine. To start
