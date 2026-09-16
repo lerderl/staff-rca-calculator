@@ -1,6 +1,6 @@
-# Starts the Convex backend and Vite frontend dev servers, each in its own
-# visible terminal window. Registered to run automatically at logon by
-# install-autostart.ps1 — see README.md.
+# Starts the Convex backend and Vite frontend dev servers in the background
+# (no windows). Registered to run automatically at logon by install-autostart.ps1 — see
+# README.md. Stop the servers with stop-dev-servers.cmd.
 #
 # Every step is time-bounded and logged to logs\autostart.log, because this
 # runs unattended right after boot, when the network and WMI are often not
@@ -9,7 +9,6 @@
 
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $ConfigPath = Join-Path $ProjectDir ".convex\local\default\config.json"
-$EnvOverridePath = Join-Path $ProjectDir ".env.development.local"
 $LogDir = Join-Path $ProjectDir "logs"
 $LogPath = Join-Path $LogDir "autostart.log"
 
@@ -71,44 +70,45 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 2
 }
 Write-Log "network: LAN IP = $(if ($LanIP) { $LanIP } else { 'none' }), internet = $online"
+# (The frontend works out the backend address from the browser's own URL,
+# so nothing here needs to know or record the LAN IP beyond this log line.)
 
-# DHCP can hand out a different IP after any reboot, so rewrite the
-# frontend's Convex URL every startup. With no LAN at all, only this machine
-# can use the app anyway, so point it at loopback.
-$ConvexHost = if ($LanIP) { $LanIP } else { "127.0.0.1" }
-$envLines = @(
-    "# LAN override for 'npx convex dev', which rewrites VITE_CONVEX_URL/VITE_CONVEX_SITE_URL"
-    "# in .env.local back to 127.0.0.1 on every run. Vite's env precedence puts"
-    "# .env.development.local above .env.local, so these values win for 'pnpm dev'"
-    "# without fighting the Convex CLI. Auto-regenerated on every startup by"
-    "# start-dev-servers.ps1 with the current LAN IP - see README.md."
-    "VITE_CONVEX_URL=http://${ConvexHost}:3210"
-    ""
-    "VITE_CONVEX_SITE_URL=http://${ConvexHost}:3211"
-)
-# No BOM: Windows PowerShell's "-Encoding utf8" adds one, which was observed
-# to corrupt parsing of the first key in this file.
-$utf8NoBom = New-Object System.Text.UTF8Encoding $false
-[System.IO.File]::WriteAllText($EnvOverridePath, ($envLines -join "`n") + "`n", $utf8NoBom)
-Write-Log "wrote .env.development.local -> $ConvexHost"
-
-# PowerShell hosts rather than cmd.exe: cmd.exe re-decorates its title with
-# " - <running command>" for as long as a child runs. The backend runs via
-# node directly rather than `npx convex dev` because npm sets its own
-# "npm exec ..." console title; npx only resolves to this same file anyway.
-function Start-TitledProcess([string]$Title, [string]$Command) {
-    Start-Process powershell.exe -WorkingDirectory $ProjectDir -WindowStyle Normal -ArgumentList @(
-        '-NoExit',
-        '-Command',
-        "`$host.UI.RawUI.WindowTitle = '$Title'; $Command"
-    )
-    Write-Log "started: $Title"
+function Test-PortOpen([int]$Port) {
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $connect = $client.ConnectAsync("127.0.0.1", $Port)
+        return ($connect.Wait(1000) -and $client.Connected)
+    } catch {
+        return $false
+    } finally {
+        $client.Close()
+    }
 }
 
-$ConvexEntry = "node `"node_modules/convex/bin/main.js`" dev"
+# Each server runs in its own headless console (no window at all), so there's
+# nothing on screen for anyone to close by accident. Its output goes to
+# logs\<name>.log instead. Stop them with scripts\stop-dev-servers.cmd.
+# Each needs its OWN headless console that lives as long as the server: a
+# console process is killed when the console it's attached to closes, so
+# they can't share this launcher's console, which closes when it exits.
+function Start-HiddenServer([string]$Name, [string]$Command) {
+    $log = Join-Path $LogDir "$Name.log"
+    Start-Process conhost.exe -WorkingDirectory $ProjectDir -WindowStyle Hidden `
+        -ArgumentList "--headless cmd.exe /d /s /c `"$Command > `"$log`" 2>&1`""
+    Write-Log "started $Name (output: logs\$Name.log)"
+}
 
-if ($online) {
-    Start-TitledProcess "staff-rca-calculator (backend)" $ConvexEntry
+# Run the CLI's entry file directly; `npx convex dev` only resolves to it.
+$ConvexEntry = "node `"node_modules\convex\bin\main.js`" dev"
+$startBackend = -not (Test-PortOpen 3210)
+$startFrontend = -not (Test-PortOpen 5173)
+if (-not $startBackend) { Write-Log "backend already running on :3210 - not starting another" }
+if (-not $startFrontend) { Write-Log "frontend already running on :5173 - not starting another" }
+
+if (-not $startBackend) {
+    # already running
+} elseif ($online) {
+    Start-HiddenServer "backend" $ConvexEntry
 } else {
     # The Convex CLI hard-fails without internet (mandatory version check),
     # even though the backend binary is already cached. Run that binary
@@ -132,10 +132,8 @@ if ($online) {
                     (Join-Path $deploymentDir "convex_local_backend.sqlite3")
                 )
                 $quotedArgs = ($backendArgs | ForEach-Object { "`"$_`"" }) -join " "
-                $offlineCommand = "Write-Host 'No internet detected - running the already-downloaded backend directly.'; " +
-                    "Write-Host 'Run npx convex dev manually once online to resume auto-pushing convex/ changes.'; " +
-                    "& `"$binaryPath`" $quotedArgs"
-                Start-TitledProcess "staff-rca-calculator (backend - OFFLINE, convex/ changes not auto-pushed)" $offlineCommand
+                Write-Log "no internet - running the cached backend binary directly (convex/ changes won't be pushed until 'npx convex dev' runs online)"
+                Start-HiddenServer "backend" "`"$binaryPath`" $quotedArgs"
                 $started = $true
             } else {
                 Write-Log "offline fallback unavailable: backend binary not found at $binaryPath"
@@ -148,10 +146,12 @@ if ($online) {
     }
 
     if (-not $started) {
-        Start-TitledProcess "staff-rca-calculator (backend)" $ConvexEntry
+        Start-HiddenServer "backend" $ConvexEntry
     }
 }
 
-Start-Sleep -Seconds 2
-Start-TitledProcess "staff-rca-calculator (frontend)" "pnpm dev"
+if ($startFrontend) {
+    Start-Sleep -Seconds 2
+    Start-HiddenServer "frontend" "pnpm dev"
+}
 Write-Log "---- launcher finished"
