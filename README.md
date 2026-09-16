@@ -207,39 +207,66 @@ whenever you sign into Windows, instead of running `npx convex dev` and
 `pnpm dev` by hand each time.
 
 [scripts/start-dev-servers.ps1](scripts/start-dev-servers.ps1) launches both
-in their own visible `cmd.exe` windows ("staff-rca-calculator (backend)" and
-"staff-rca-calculator (frontend)"), and is registered to run at logon via a Scheduled Task named
-**StaffRCACalculator-DevServers**. To (re)create that task, run in an
-ordinary (non-admin) PowerShell:
+in their own terminal windows, titled "staff-rca-calculator (backend)" and
+"staff-rca-calculator (frontend)". It runs at logon via a Scheduled Task
+named **StaffRCACalculator-DevServers**.
 
-```powershell
-$ScriptPath = "<path-to-project>\scripts\start-dev-servers.ps1"
-$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
-$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-Register-ScheduledTask -TaskName "StaffRCACalculator-DevServers" -Action $Action -Trigger $Trigger -Settings $Settings -Description "Starts Convex backend and Vite frontend dev servers at logon" -Force
-```
+### Setting it up on a host machine
+
+The task is tied to one machine, one Windows account, and the folder the
+project lives in — so it has to be set up **on each host machine**, signed
+in as the account that will host the app. Copying the project folder to
+another PC does not carry the task with it.
+
+1. Make sure the app already runs by hand on that machine (`pnpm install`,
+   then `npx convex dev` and `pnpm dev` from the
+   [First-time setup](#first-time-setup) and [Running](#running) steps).
+   The auto-start only starts what already works.
+2. Double-click [scripts/install-autostart.cmd](scripts/install-autostart.cmd)
+   (no admin rights needed). It registers the task for the signed-in user,
+   pointing at wherever the project folder is on that machine. If the
+   project folder is ever moved, run it again.
+3. Sign out and back in (or restart) to test it.
 
 This triggers **at logon**, not at power-on before anyone signs in — if you
 want it running the instant the PC boots with nobody at the keyboard, the
 machine would also need to be configured to auto-login, which is a separate
-(and more sensitive, since it stores no password but does bypass the login
-screen) setup not covered here.
+(and more sensitive, since it bypasses the login screen) setup not covered
+here.
 
-**Why the script waits before starting Convex:** "At logon" can fire before
-Wi-Fi has actually finished reconnecting. `npx convex dev` needs to reach
-`version.convex.dev` to check for backend updates, and fails immediately
-with `Failed to fetch latest backend version` if the network isn't up yet —
-even though running the exact same command by hand moments later works
-fine, since by then the network has caught up. The script works around this
-by polling that endpoint (up to 15s) before deciding whether to launch
-Convex normally.
+### If it doesn't start
+
+Every run writes a timestamped log to `logs\autostart.log` in the project
+folder: when the launcher started, the LAN IP and internet status it
+detected, and each server it started. If nothing appears after logging in:
+
+- **No log file at all** — the task never ran. Check it exists with
+  `Get-ScheduledTask -TaskName "StaffRCACalculator-DevServers"`, and re-run
+  `install-autostart.cmd` while signed in as the hosting account.
+- **Log ends at "launcher finished" but a server window shows an error** —
+  the launcher did its job; the error is in that server itself (for
+  example, `node_modules` missing because `pnpm install` was never run on
+  that machine).
+
+### How the launcher behaves
+
+**Task priority:** the installer sets the task to normal priority (4).
+Task Scheduler's default (7) runs tasks at below-normal CPU and very-low
+disk priority — right after a restart that made the launcher take 20+
+minutes to even get going, and the servers inherited that low priority too.
+
+**Waiting for the network:** "At logon" can fire before Wi-Fi has finished
+reconnecting. The Convex CLI needs to reach `version.convex.dev` at
+startup and fails with `Failed to fetch latest backend version` if it
+can't. So the launcher waits up to 60s for a LAN IP and a connection to
+that host (each check is hard-limited to a few seconds, so a half-up
+network can't hang it) before deciding which mode to start in.
 
 **What happens with no internet at all:** the CLI's version check is
 mandatory as far as it's concerned — it fails the same way whether the
 network is 5 seconds from being ready or never coming back, even though the
 backend binary is already downloaded and cached locally and doesn't
-actually need that check to run. So if the 15s wait above times out, the
+actually need that check to run. So if the 60s wait above times out, the
 script falls back to launching the cached `convex-local-backend.exe`
 directly (same ports and deployment credentials the CLI would use, read
 from `.convex/local/default/config.json`), bypassing the CLI wrapper and

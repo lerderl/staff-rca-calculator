@@ -1,156 +1,157 @@
 # Starts the Convex backend and Vite frontend dev servers, each in its own
-# visible terminal window. Registered to run automatically at logon by the
-# "StaffRCACalculator-DevServers" Scheduled Task — see README.md.
+# visible terminal window. Registered to run automatically at logon by
+# install-autostart.ps1 — see README.md.
+#
+# Every step is time-bounded and logged to logs\autostart.log, because this
+# runs unattended right after boot, when the network and WMI are often not
+# ready yet. An unbounded step here previously hung the launcher for 20+
+# minutes with no indication of why.
 
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $ConfigPath = Join-Path $ProjectDir ".convex\local\default\config.json"
 $EnvOverridePath = Join-Path $ProjectDir ".env.development.local"
+$LogDir = Join-Path $ProjectDir "logs"
+$LogPath = Join-Path $LogDir "autostart.log"
 
-# DHCP can hand this machine a different LAN IP after any reboot/reconnect,
-# which would otherwise silently strand .env.development.local on a stale
-# address (the frontend bundle would keep trying to reach a host that no
-# longer exists, and the app would just hang on "Verifying auth..." with no
-# obvious error). So re-detect the current LAN IP and rewrite the file fresh
-# on every startup instead of trusting whatever was written last time.
-# The active internet-facing adapter is identified via the default route,
-# rather than by adapter name, so this works regardless of Wi-Fi vs Ethernet
-# and ignores virtual adapters (WSL, Hyper-V) that don't carry a default route.
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+function Write-Log([string]$Message) {
+    Add-Content -Path $LogPath -Value ("{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message)
+}
+
+Write-Log "---- launcher started (user $env:USERNAME, project $ProjectDir)"
+
+# Uses .NET directly rather than Get-NetRoute/Get-NetIPAddress: those go
+# through WMI, which can block for many minutes right after boot. The
+# LAN-facing adapter is the one that's up and has an IPv4 default gateway,
+# which also skips virtual adapters (WSL, Hyper-V) that have none.
 function Get-LanIPv4 {
     try {
-        $route = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop |
-            Where-Object { $_.NextHop -ne "0.0.0.0" } |
-            Sort-Object -Property RouteMetric |
-            Select-Object -First 1
-        if ($route) {
-            $ip = Get-NetIPAddress -InterfaceIndex $route.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop |
-                Where-Object { $_.IPAddress -notlike "169.254.*" } |
-                Select-Object -First 1
-            if ($ip) { return $ip.IPAddress }
+        foreach ($nic in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            if ($nic.OperationalStatus -ne 'Up' -or $nic.NetworkInterfaceType -eq 'Loopback') { continue }
+            $props = $nic.GetIPProperties()
+            $gateway = $props.GatewayAddresses | Where-Object {
+                $_.Address.AddressFamily -eq 'InterNetwork' -and $_.Address.ToString() -ne '0.0.0.0'
+            }
+            if (-not $gateway) { continue }
+            $addr = $props.UnicastAddresses | Where-Object {
+                $_.Address.AddressFamily -eq 'InterNetwork' -and -not $_.Address.ToString().StartsWith('169.254.')
+            } | Select-Object -First 1
+            if ($addr) { return $addr.Address.ToString() }
         }
     } catch {}
     return $null
 }
 
-$LanIP = Get-LanIPv4
-if ($LanIP) {
-    $envLines = @(
-        "# LAN override for 'npx convex dev', which rewrites VITE_CONVEX_URL/VITE_CONVEX_SITE_URL"
-        "# in .env.local back to 127.0.0.1 on every run. Vite's env precedence puts"
-        "# .env.development.local above .env.local, so these values win for 'pnpm dev'"
-        "# without fighting the Convex CLI. Auto-regenerated on every startup by"
-        "# start-dev-servers.ps1 with the current LAN IP - see README.md."
-        "VITE_CONVEX_URL=http://${LanIP}:3210"
-        ""
-        "VITE_CONVEX_SITE_URL=http://${LanIP}:3211"
-    )
-    # Windows PowerShell's "-Encoding utf8" always writes a BOM, which the
-    # dotenv parser Vite/Convex use does NOT handle the same way across all
-    # of a project's env files — a BOM here while .env.local has none was
-    # observed to silently corrupt parsing of the first key in this file.
-    # Write plain UTF-8 without a BOM to match .env.local exactly.
-    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($EnvOverridePath, ($envLines -join "`n") + "`n", $utf8NoBom)
+# Invoke-WebRequest's -TimeoutSec doesn't cover DNS resolution, so it can
+# hang well past its timeout on a half-up network. DNS + TCP connect via
+# async calls with Wait() is hard-bounded.
+function Test-ConvexReachable([int]$TimeoutMs = 3000) {
+    $client = $null
+    try {
+        $dns = [System.Net.Dns]::GetHostAddressesAsync("version.convex.dev")
+        if (-not $dns.Wait($TimeoutMs)) { return $false }
+        $client = New-Object System.Net.Sockets.TcpClient
+        $connect = $client.ConnectAsync($dns.Result[0], 443)
+        return ($connect.Wait($TimeoutMs) -and $client.Connected)
+    } catch {
+        return $false
+    } finally {
+        if ($client) { $client.Close() }
+    }
 }
 
-# Each server runs inside a PowerShell host (not cmd.exe) so its window title
-# stays exactly as set. cmd.exe re-decorates its own title with " - <running
-# command>" for as long as any foreground child process is active — this is
-# default cmd.exe/conhost behaviour (confirmed with plain builtins like
-# `timeout`, nothing to do with npm or pnpm specifically) and it re-applies
-# far too often to reliably override from outside. PowerShell's own console
-# host has no such behaviour, so setting $host.UI.RawUI.WindowTitle there
-# just sticks for the life of the window.
-#
-# Separately, `npx`/`npm exec` itself calls the Windows console-title API to
-# show "npm exec <command>" — confirmed present even under the PowerShell
-# host above, so it's npm's own doing, not a shell decoration. The backend
-# is launched via `node node_modules/convex/bin/main.js dev` instead of
-# `npx convex dev` specifically to route around npm's wrapper entirely —
-# npx only resolves and forwards to that exact file, so this is otherwise
-# identical, just without npm's title override.
-function Start-TitledProcess {
-    param([string]$Title, [string]$Command)
+# Give Wi-Fi/DHCP up to 60s after logon to come up before deciding what
+# network state we're in.
+$LanIP = $null
+$online = $false
+$deadline = (Get-Date).AddSeconds(60)
+while ((Get-Date) -lt $deadline) {
+    if (-not $LanIP) { $LanIP = Get-LanIPv4 }
+    if ($LanIP -and (Test-ConvexReachable)) { $online = $true; break }
+    Start-Sleep -Seconds 2
+}
+Write-Log "network: LAN IP = $(if ($LanIP) { $LanIP } else { 'none' }), internet = $online"
+
+# DHCP can hand out a different IP after any reboot, so rewrite the
+# frontend's Convex URL every startup. With no LAN at all, only this machine
+# can use the app anyway, so point it at loopback.
+$ConvexHost = if ($LanIP) { $LanIP } else { "127.0.0.1" }
+$envLines = @(
+    "# LAN override for 'npx convex dev', which rewrites VITE_CONVEX_URL/VITE_CONVEX_SITE_URL"
+    "# in .env.local back to 127.0.0.1 on every run. Vite's env precedence puts"
+    "# .env.development.local above .env.local, so these values win for 'pnpm dev'"
+    "# without fighting the Convex CLI. Auto-regenerated on every startup by"
+    "# start-dev-servers.ps1 with the current LAN IP - see README.md."
+    "VITE_CONVEX_URL=http://${ConvexHost}:3210"
+    ""
+    "VITE_CONVEX_SITE_URL=http://${ConvexHost}:3211"
+)
+# No BOM: Windows PowerShell's "-Encoding utf8" adds one, which was observed
+# to corrupt parsing of the first key in this file.
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($EnvOverridePath, ($envLines -join "`n") + "`n", $utf8NoBom)
+Write-Log "wrote .env.development.local -> $ConvexHost"
+
+# PowerShell hosts rather than cmd.exe: cmd.exe re-decorates its title with
+# " - <running command>" for as long as a child runs. The backend runs via
+# node directly rather than `npx convex dev` because npm sets its own
+# "npm exec ..." console title; npx only resolves to this same file anyway.
+function Start-TitledProcess([string]$Title, [string]$Command) {
     Start-Process powershell.exe -WorkingDirectory $ProjectDir -WindowStyle Normal -ArgumentList @(
         '-NoExit',
         '-Command',
         "`$host.UI.RawUI.WindowTitle = '$Title'; $Command"
     )
+    Write-Log "started: $Title"
 }
 
-function Test-ConvexVersionEndpoint {
-    try {
-        Invoke-WebRequest -Uri "https://version.convex.dev/v1/local_backend_version" -TimeoutSec 3 -UseBasicParsing | Out-Null
-        return $true
-    } catch {
-        return $false
-    }
-}
-
-# "At logon" can fire before Wi-Fi/DHCP has actually finished reconnecting.
-# `npx convex dev` needs to reach version.convex.dev to check for backend
-# updates and fails with "Failed to fetch latest backend version" if it
-# can't — so give the network a short window to come up before deciding
-# there's genuinely no connection.
-$online = $false
-$deadline = (Get-Date).AddSeconds(15)
-while ((Get-Date) -lt $deadline) {
-    if (Test-ConvexVersionEndpoint) { $online = $true; break }
-    Start-Sleep -Seconds 2
-}
+$ConvexEntry = "node `"node_modules/convex/bin/main.js`" dev"
 
 if ($online) {
-    Start-TitledProcess -Title "staff-rca-calculator (backend)" -Command "node `"node_modules/convex/bin/main.js`" dev"
+    Start-TitledProcess "staff-rca-calculator (backend)" $ConvexEntry
 } else {
-    # Genuinely offline: `npx convex dev` will keep failing no matter how long
-    # we wait, because the CLI treats that version check as mandatory even
-    # though the backend binary is already downloaded and cached locally and
-    # doesn't actually need it to run. Work around this by launching the
-    # cached binary directly, using the same deployment credentials and ports
-    # the CLI itself would use (from .convex/local/default/config.json).
-    #
-    # Trade-off: this brings the backend up with whatever functions were last
-    # successfully pushed — edits made to convex/ while offline will NOT be
-    # picked up. Run `npx convex dev` once you're back online to resume the
-    # normal watch-and-push loop.
+    # The Convex CLI hard-fails without internet (mandatory version check),
+    # even though the backend binary is already cached. Run that binary
+    # directly with the same ports/credentials the CLI would use. Functions
+    # last pushed are served; edits to convex/ aren't pushed until the CLI
+    # runs again with internet.
     $started = $false
     if (Test-Path $ConfigPath) {
         try {
             $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
             $binaryPath = Join-Path $env:LOCALAPPDATA "convex\binaries\$($config.backendVersion)\convex-local-backend.exe"
             $deploymentDir = Split-Path -Parent $ConfigPath
-            $storageDir = Join-Path $deploymentDir "convex_local_storage"
-            $dbFile = Join-Path $deploymentDir "convex_local_backend.sqlite3"
-
             if (Test-Path $binaryPath) {
                 $backendArgs = @(
                     "--port", $config.ports.cloud,
                     "--site-proxy-port", $config.ports.site,
                     "--instance-name", $config.deploymentName,
                     "--instance-secret", $config.instanceSecret,
-                    "--local-storage", $storageDir,
+                    "--local-storage", (Join-Path $deploymentDir "convex_local_storage"),
                     "--disable-beacon",
-                    $dbFile
+                    (Join-Path $deploymentDir "convex_local_backend.sqlite3")
                 )
                 $quotedArgs = ($backendArgs | ForEach-Object { "`"$_`"" }) -join " "
                 $offlineCommand = "Write-Host 'No internet detected - running the already-downloaded backend directly.'; " +
                     "Write-Host 'Run npx convex dev manually once online to resume auto-pushing convex/ changes.'; " +
                     "& `"$binaryPath`" $quotedArgs"
-                Start-TitledProcess -Title "staff-rca-calculator (backend - OFFLINE, convex/ changes not auto-pushed)" -Command $offlineCommand
+                Start-TitledProcess "staff-rca-calculator (backend - OFFLINE, convex/ changes not auto-pushed)" $offlineCommand
                 $started = $true
+            } else {
+                Write-Log "offline fallback unavailable: backend binary not found at $binaryPath"
             }
         } catch {
-            $started = $false
+            Write-Log "offline fallback failed: $($_.Exception.Message)"
         }
+    } else {
+        Write-Log "offline fallback unavailable: $ConfigPath not found (deployment never provisioned on this machine)"
     }
 
     if (-not $started) {
-        # No cached binary/config to fall back on (e.g. this machine has never
-        # provisioned the local deployment) — nothing offline-safe to run, so
-        # just attempt the normal path and let it report the real error.
-        Start-TitledProcess -Title "staff-rca-calculator (backend)" -Command "node `"node_modules/convex/bin/main.js`" dev"
+        Start-TitledProcess "staff-rca-calculator (backend)" $ConvexEntry
     }
 }
 
 Start-Sleep -Seconds 2
-
-Start-TitledProcess -Title "staff-rca-calculator (frontend)" -Command "pnpm dev"
+Start-TitledProcess "staff-rca-calculator (frontend)" "pnpm dev"
+Write-Log "---- launcher finished"
