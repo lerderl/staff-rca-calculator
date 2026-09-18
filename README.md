@@ -250,6 +250,13 @@ Task Scheduler's default (7) runs tasks at below-normal CPU and very-low
 disk priority — right after a restart that made the launcher take 20+
 minutes to even get going, and the servers inherited that low priority too.
 
+**Convex backend upgrades:** when Convex releases a new backend version,
+`npx convex dev` normally stops and asks "Upgrade now? (Y/n)". The hidden
+servers get no keyboard input, so the CLI takes its default instead:
+upgrade, keeping the existing data (it never picks "start fresh" on its
+own). `logs\backend.log` shows "Successfully upgraded to a new backend
+version" when this happens; that first start takes a minute or so longer.
+
 **Waiting for the network:** "At logon" can fire before Wi-Fi has finished
 reconnecting. The Convex CLI needs to reach `version.convex.dev` at
 startup and fails with `Failed to fetch latest backend version` if it

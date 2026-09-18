@@ -91,10 +91,14 @@ function Test-PortOpen([int]$Port) {
 # Each needs its OWN headless console that lives as long as the server: a
 # console process is killed when the console it's attached to closes, so
 # they can't share this launcher's console, which closes when it exits.
+# Input comes from NUL so no server can ever sit waiting on a prompt nobody
+# can see. The Convex CLI in particular asks "Upgrade now? (Y/n)" whenever a
+# new backend version is released; with non-interactive input it instead
+# takes its default automatically — upgrade and transfer the existing data.
 function Start-HiddenServer([string]$Name, [string]$Command) {
     $log = Join-Path $LogDir "$Name.log"
     Start-Process conhost.exe -WorkingDirectory $ProjectDir -WindowStyle Hidden `
-        -ArgumentList "--headless cmd.exe /d /s /c `"$Command > `"$log`" 2>&1`""
+        -ArgumentList "--headless cmd.exe /d /s /c `"$Command < NUL > `"$log`" 2>&1`""
     Write-Log "started $Name (output: logs\$Name.log)"
 }
 
