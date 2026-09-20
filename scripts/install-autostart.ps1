@@ -11,7 +11,7 @@ $TaskName = "StaffRCACalculator-DevServers"
 $LauncherPath = Join-Path $PSScriptRoot "start-dev-servers.ps1"
 
 # `conhost --headless` runs the launcher without opening a blank terminal
-# window; the two server windows it starts still open normally.
+# window; the servers it starts run headless too.
 $Action = New-ScheduledTaskAction -Execute "conhost.exe" `
     -Argument "--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$LauncherPath`""
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
@@ -19,7 +19,11 @@ $Trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAM
 # below-normal CPU and very-low disk I/O priority, which made the launcher
 # take 20+ minutes to get going right after boot — and the servers it
 # starts would inherit that priority too.
-$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Priority 4
+# The launcher stays running as a watchdog, so it must not be subject to Task
+# Scheduler's default 72-hour limit (which would end it and the servers). If
+# the launcher itself fails, Task Scheduler restarts it every minute, up to 5 times.
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Priority 4 `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)
 
 Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings `
     -Description "Starts the staff-rca-calculator Convex backend and Vite frontend at logon" -Force | Out-Null

@@ -196,15 +196,20 @@ screen for anyone to close by accident. Their output goes to
 `logs\backend.log` and `logs\frontend.log`. It runs at logon via a Scheduled
 Task named **StaffRCACalculator-DevServers**.
 
+The launcher then **stays running as a watchdog**: it checks both servers
+every 10 seconds and restarts one automatically if it fails to start or
+stops later (see [Automatic restarts](#automatic-restarts)).
+
 Since there are no windows to close, use these instead (double-click them):
 
 | Script | What it does |
 | --- | --- |
-| [scripts/stop-dev-servers.cmd](scripts/stop-dev-servers.cmd) | Stops both background servers |
+| [scripts/stop-dev-servers.cmd](scripts/stop-dev-servers.cmd) | Stops both background servers and the watchdog |
 | [scripts/start-dev-servers.cmd](scripts/start-dev-servers.cmd) | Starts them again now, without signing out |
 
-Starting when the servers are already running is harmless — the launcher
-sees them and doesn't start a second copy.
+Starting when the servers are already running is harmless — only one
+watchdog runs at a time, and it doesn't start a second copy of a server
+that's already up.
 
 ### Setting it up on a host machine
 
@@ -238,8 +243,8 @@ detected, and each server it started. If nothing appears after logging in:
 - **No log file at all** — the task never ran. Check it exists with
   `Get-ScheduledTask -TaskName "StaffRCACalculator-DevServers"`, and re-run
   `install-autostart.cmd` while signed in as the hosting account.
-- **Log ends at "launcher finished" but the app doesn't load** — the
-  launcher did its job; check `logs\backend.log` and `logs\frontend.log`
+- **Log keeps showing "failed to start ... retrying"** — the watchdog is
+  retrying but the server itself can't start; check `logs\backend.log` and `logs\frontend.log`
   for the server's own error (for example, `node_modules` missing because
   `pnpm install` was never run on that machine).
 
@@ -256,6 +261,39 @@ servers get no keyboard input, so the CLI takes its default instead:
 upgrade, keeping the existing data (it never picks "start fresh" on its
 own). `logs\backend.log` shows "Successfully upgraded to a new backend
 version" when this happens; that first start takes a minute or so longer.
+
+<a id="automatic-restarts"></a>
+**Automatic restarts and the startup timeout:** the Convex CLI gives the
+local backend only 30 seconds to start by default. Right after boot —
+especially just after it downloaded a new backend version, which antivirus
+scans on first run — that isn't enough, and it fails with `Local backend did
+not start on port 3210 within 30 seconds`. The launcher raises that limit to
+**300 seconds** (`CONVEX_LOCAL_BACKEND_STARTUP_TIMEOUT_SECS`; set it
+yourself in Windows' environment variables to use a different value). If
+the CLI still fails or times out, the launcher immediately starts the cached
+local backend binary instead (the same local mode described below for no
+internet). If a server is down for 30 seconds at any point later, the
+watchdog restarts it, waiting 15s, 30s, 60s, then 2 minutes between
+repeated failed attempts. Every restart is recorded in `logsutostart.log`.
+The Scheduled Task has no time limit (Task Scheduler's default would end
+the watchdog after 3 days), and it is set to relaunch the watchdog if the
+watchdog itself crashes. Re-run `install-autostart.cmd` once on each host
+machine to apply those task settings.
+
+**Sign-in timeouts (`Function execution timed out (maximum duration: 1s)`):**
+Convex stops a query or mutation after 1 second of execution. That limit
+protects Convex's shared cloud; on this single-machine deployment it only
+gets in the way, because signing in can legitimately take longer than a
+second here. The password check (scrypt, which is slow by design) runs
+inside the `auth:store` mutation, and the first call after the backend
+starts also pays for loading and compiling the app's functions - so on a
+busy or just-booted PC the login screen failed with that error. The
+launcher raises the limit to **10 seconds** by passing
+`DATABASE_UDF_USER_TIMEOUT_SECONDS` to the backend, and makes one warm-up
+call once the backend is up so the first person to sign in doesn't pay the
+cold-start cost. If you start the backend by hand with `npx convex dev`,
+it runs with the 1-second default again; use `start-dev-servers.cmd`, or
+set that variable yourself first.
 
 **Waiting for the network:** "At logon" can fire before Wi-Fi has finished
 reconnecting. The Convex CLI needs to reach `version.convex.dev` at
